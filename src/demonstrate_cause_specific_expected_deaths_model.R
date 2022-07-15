@@ -194,7 +194,7 @@ XCOD <- function (
   df,
   cols_prop, col_total, col_stratum, col_origin_time,
   col_seasonal_time, col_cvflag,
-  nsim = 1000, quantiles = c(0.025, 0.1, 0.25, 0.75, 0.9, 0.975)
+  nsim = 1000, quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975)
 ) {
   
   require(mgcv)
@@ -255,13 +255,14 @@ XCOD <- function (
   
   Dk_hat_quantiles <-
     aperm(
-      apply(Dk_hat[,-1,], c(1,3), quantile, na.rm = 'TRUE'),
+      apply(Dk_hat[,-1,], c(1,3), quantile, probs = quantiles,
+            na.rm = TRUE),
       c(2,1,3)
     )
   
   for (k in 1:(p+1)) {
     X <- Dk_hat_quantiles[,,k]
-    colnames(X) <- paste0(cols_prop[k], '_Q', colnames(Dk_hat_quantiles))
+    colnames(X) <- paste0('D_', cols_prop[k], '_Q', quantiles)
     df <- cbind(df, X)
   }
   
@@ -277,7 +278,7 @@ df <- XCOD(
   col_seasonal_time = 'w',
   col_cvflag = 'cv_flag',
   nsim = 1000,
-  quantiles = c(0.025, 0.1, 0.25, 0.75, 0.9, 0.975)
+  quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975)
 )
 
 # Observed versus predicted versus true mean ----------------------
@@ -286,26 +287,25 @@ ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeA$pred) +
   geom_point(aes(y = pA*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = `pA_Q0%`, ymax = `pA_Q100%`, fill = cv_flag),
+  geom_ribbon(aes(ymin = D_pA_Q0.025, ymax = D_pA_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = `pA_Q50%`, color = cv_flag), data = df) +
+  geom_line(aes(y = `D_pA_Q0.5`, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
 
 ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeB$pred) +
   geom_point(aes(y = pB*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = `pB_Q0%`, ymax = `pB_Q100%`, fill = cv_flag),
+  geom_ribbon(aes(ymin = D_pB_Q0.025, ymax = D_pB_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = `pB_Q50%`, color = cv_flag), data = df) +
+  geom_line(aes(y = `D_pB_Q0.5`, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
 
 ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeC$pred) +
   geom_point(aes(y = pC*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = `pC_Q0%`, ymax = `pC_Q100%`, fill = cv_flag),
+  geom_ribbon(aes(ymin = D_pC_Q0.025, ymax = D_pC_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = `pC_Q50%`, color = cv_flag), data = df) +
+  geom_line(aes(y = `D_pC_Q0.5`, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
-
