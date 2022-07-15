@@ -185,6 +185,7 @@ ggplot(sim$prop) +
 #' @param col_cvflag 
 #' @param nsim 
 #' @param quantiles 
+#' @param basis
 #'
 #' @return
 #' @export
@@ -194,7 +195,8 @@ XCOD <- function (
   df,
   cols_prop, col_total, col_stratum, col_origin_time,
   col_seasonal_time, col_cvflag,
-  nsim = 1000, quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975)
+  nsim = 1000, quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
+  basis = 'ilr'
 ) {
   
   require(mgcv)
@@ -238,7 +240,7 @@ XCOD <- function (
   D <- apply(L, 2, function (lambda) rpois(N, lambda))
 
   P <- as.matrix(df_training[,cols_prop])
-  Plr <- coordinates(P, basis = 'ilr')
+  Plr <- coordinates(P, basis = basis)
   Plr_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p))
   
   props_form <- update.formula(deathsTotal_form, plr ~ .)
@@ -268,7 +270,7 @@ XCOD <- function (
   
   P_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
   for (j in 1:nsim) {
-    P_hat_j <- composition(Plr_hat[,j,], basis = 'ilr')
+    P_hat_j <- composition(Plr_hat[,j,], basis = basis)
     for (k in 1:(p+1))
       P_hat[,j,k] <- P_hat_j[,k]
   }
@@ -303,7 +305,8 @@ df <- XCOD(
   col_seasonal_time = 'w',
   col_cvflag = 'cv_flag',
   nsim = 1000,
-  quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975)
+  quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
+  basis = 'ilr'
 )
 
 # Observed versus predicted versus true mean ----------------------
