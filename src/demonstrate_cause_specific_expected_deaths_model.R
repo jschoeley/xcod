@@ -90,7 +90,7 @@ server <- function(input, output) {
 }
 
 # start shiny app
-shinyApp(ui, server)
+#shinyApp(ui, server)
 
 # Simulate expected deaths ----------------------------------------
 
@@ -198,6 +198,7 @@ XCOD <- function (
 ) {
   
   require(mgcv)
+  require(coda.base)
   
   N = nrow(df)
   p = length(cols_prop)-1
@@ -220,13 +221,24 @@ XCOD <- function (
     data = df_training,
     family = poisson(link = 'log')
   )
-  lambda <- exp(predict(deathsTotal_fit, newdata = df))
-  L <- matrix(lambda, nrow = N, ncol = nsim+1)
-  D <- apply(L, 2, function (lambda) rpois(N, lambda))
+  deathsTotal_Xprd <-
+    predict(deathsTotal_fit, newdata = df_prediction, type = 'lpmatrix')
+  deathsTotal_beta <- coef(deathsTotal_fit)
+  deathsTotal_beta_sim <- MASS::mvrnorm(
+    nsim, deathsTotal_beta,
+    vcov(deathsTotal_fit, freq = FALSE, unconditional = TRUE)
+  )
+  deathsTotal_lambda_sim <- c(apply(
+    deathsTotal_beta_sim, 1,
+    FUN = function (b) exp(deathsTotal_Xprd%*%b)
+  ))
+  L <- matrix(deathsTotal_lambda_sim, nrow = N, ncol = nsim)
+  L <- cbind(exp(deathsTotal_Xprd%*%deathsTotal_beta), L)
   
+  D <- apply(L, 2, function (lambda) rpois(N, lambda))
+
   P <- as.matrix(df_training[,cols_prop])
-  # log-ratio transform
-  Plr <- log(apply(P, 2, function (x) x/P[,1]))[,-1]
+  Plr <- coordinates(P, basis = 'ilr')
   Plr_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p))
   
   props_form <- update.formula(deathsTotal_form, plr ~ .)
@@ -238,12 +250,25 @@ XCOD <- function (
                         family = gaussian(link = 'identity'),
                         data = the_data
     )
-    Plr_hat[,,k] <- predict(prop_gam_fit, newdata = df_prediction)
+    prop_gam_Xprd <-
+      predict(prop_gam_fit, newdata = df_prediction, type = 'lpmatrix')
+    prop_gam_beta <- coef(prop_gam_fit)
+    prop_gam_beta_sim <- MASS::mvrnorm(
+      nsim, prop_gam_beta,
+      vcov(prop_gam_fit, freq = FALSE, unconditional = TRUE)
+    )
+    prop_gam_plr_sim <- c(apply(
+      prop_gam_beta_sim, 1,
+      FUN = function (b) prop_gam_Xprd%*%b
+    ))
+    Plr_hat[,-1,k] <-
+      matrix(prop_gam_plr_sim, nrow = N, ncol = nsim)
+    Plr_hat[,1,k] <- prop_gam_Xprd%*%prop_gam_beta
   }
   
   P_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
   for (j in 1:nsim) {
-    P_hat_j <- prop.table(cbind(1, exp(Plr_hat[,j,])), 1)
+    P_hat_j <- composition(Plr_hat[,j,], basis = 'ilr')
     for (k in 1:(p+1))
       P_hat[,j,k] <- P_hat_j[,k]
   }
