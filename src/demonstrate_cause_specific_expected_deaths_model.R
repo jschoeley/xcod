@@ -236,8 +236,6 @@ XCOD <- function (
   ))
   L <- matrix(deathsTotal_lambda_sim, nrow = N, ncol = nsim)
   L <- cbind(exp(deathsTotal_Xprd%*%deathsTotal_beta), L)
-  
-  D <- apply(L, 2, function (lambda) rpois(N, lambda))
 
   P <- as.matrix(df_training[,cols_prop])
   Plr <- coordinates(P, basis = basis)
@@ -277,7 +275,8 @@ XCOD <- function (
   
   Dk_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
   for (k in 1:(p+1)) {
-    Dk_hat[,,k] <- P_hat[,,k]*D
+    Dk_hat[,,k] <-
+      apply(P_hat[,,k]*L, 2, function (lambda_k) rpois(N, lambda_k))
   }
   
   Dk_hat_quantiles <-
