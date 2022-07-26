@@ -178,19 +178,26 @@ ggplot(sim$prop) +
 #'   Character vector of column names giving the weekly death
 #'   proportions by cause.
 #' @param col_total
-#'   
+#'   Quoted column name for total deaths.
 #' @param col_stratum 
-#' @param col_origin_time 
-#' @param col_seasonal_time 
-#' @param col_cvflag 
-#' @param nsim 
-#' @param quantiles 
+#'   Quoted column name for stratum.
+#' @param col_origin_time
+#'   Quoted column name for numeric time since origin
+#'   (e.g. months since Jan 2015).
+#' @param col_seasonal_time
+#'   Quoted column name for numeric seasonal time
+#'   (e.g. months into year).
+#' @param col_cvflag
+#'   Quoted column name for cross-validation flag column. Column
+#'   must be character with "training" for data used to fit the models
+#'   and test for time points to make predictions for.
+#' @param nsim
+#'   Number of simulation draws. Default = 1000.
+#' @param quantiles
+#'   Numeric vector of quantiles to report for predicted distribution.
 #' @param basis
-#'
-#' @return
-#' @export
-#'
-#' @examples
+#'   The basis for the coda transformation of the data. Can be "ilr"
+#'   (default), "alr", or "cdp". See ?coda.base::coordinates.
 XCOD <- function (
   df,
   cols_prop, col_total, col_stratum, col_origin_time,
@@ -275,8 +282,9 @@ XCOD <- function (
   
   Dk_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
   for (k in 1:(p+1)) {
-    Dk_hat[,,k] <-
-      apply(P_hat[,,k]*L, 2, function (lambda_k) rpois(N, lambda_k))
+    Dk_hat[,-1,k] <-
+      apply(P_hat[,-1,k]*L[,-1], 2, function (lambda_k) rpois(N, lambda_k))
+    Dk_hat[,1,k] <- P_hat[,1,k]*L[,1]
   }
   
   Dk_hat_quantiles <-
@@ -287,8 +295,11 @@ XCOD <- function (
     )
   
   for (k in 1:(p+1)) {
-    X <- Dk_hat_quantiles[,,k]
-    colnames(X) <- paste0('D_', cols_prop[k], '_Q', quantiles)
+    X <- cbind(Dk_hat[,1,k], Dk_hat_quantiles[,,k])
+    colnames(X) <- c(
+      paste0('D', cols_prop[k], '_AVG'),
+      paste0('D', cols_prop[k], '_Q', quantiles)
+    )
     df <- cbind(df, X)
   }
   
@@ -314,25 +325,25 @@ ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeA$pred) +
   geom_point(aes(y = pA*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = D_pA_Q0.025, ymax = D_pA_Q0.975, fill = cv_flag),
+  geom_ribbon(aes(ymin = DpA_Q0.025, ymax = DpA_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = `D_pA_Q0.5`, color = cv_flag), data = df) +
+  geom_line(aes(y = `DpA_AVG`, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
 
 ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeB$pred) +
   geom_point(aes(y = pB*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = D_pB_Q0.025, ymax = D_pB_Q0.975, fill = cv_flag),
+  geom_ribbon(aes(ymin = DpB_Q0.025, ymax = DpB_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = `D_pB_Q0.5`, color = cv_flag), data = df) +
+  geom_line(aes(y = DpB_AVG, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
 
 ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeC$pred) +
   geom_point(aes(y = pC*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = D_pC_Q0.025, ymax = D_pC_Q0.975, fill = cv_flag),
+  geom_ribbon(aes(ymin = DpC_Q0.025, ymax = DpC_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = `D_pC_Q0.5`, color = cv_flag), data = df) +
+  geom_line(aes(y = DpC_AVG, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
