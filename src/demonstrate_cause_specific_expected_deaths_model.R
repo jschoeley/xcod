@@ -1,23 +1,20 @@
-# Estimate Weekly Expected Deaths by Cause over Strata
-# Given Time-series of Total Deaths and Cause-Proportions
-#
-# First data is simulated and split into training-test chunks.
-# Then a GAM is fit to the training time series of total death
-# counts and total deaths are predicted for the test period.
-# The cause specific proportions are transformed by the additive
-# log-ratio transform and then modeled using a GAM, predicted
-# for the test period, and back transformed to proportions.
-# Given the expected total deaths and expected cause-specific
-# proportions for the test period, one can derive expected
-# deaths by cause over the test period.
+#' Estimate Weekly Expected Deaths by Cause over Strata
+#' Given Time-series of Total Deaths and Cause-Proportions
+#'
+#' First data is simulated and split into training-test chunks.
+#' Then a GAM is fit to the training time series of total death
+#' counts and total deaths are predicted for the test period.
+#' The cause specific proportions are transformed by the additive
+#' log-ratio transform and then modeled using a GAM, predicted
+#' for the test period, and back transformed to proportions.
+#' Given the expected total deaths and expected cause-specific
+#' proportions for the test period, one can derive expected
+#' deaths by cause over the test period.
 
 # Init ------------------------------------------------------------
 
 library(shiny)
-library(ggplot2)
-
-# Functions -------------------------------------------------------
-
+library(tidyverse)
 
 # Setup data grid -------------------------------------------------
 
@@ -104,6 +101,7 @@ sim$causeA$pred <- data.frame(
 )
 sim$causeA$pred$deaths <-
   rpois(nrow(sim$X_df), sim$causeA$pred$lambda)
+
 sim$causeB <- list()
 sim$causeB$para <-
   c(b0 = 6, b1 = -0.003, b2 = 0.001, b3 = log(1.17),
@@ -113,15 +111,27 @@ sim$causeB$pred <- data.frame(
 )
 sim$causeB$pred$deaths <-
   rpois(nrow(sim$X_df), sim$causeB$pred$lambda)
+
 sim$causeC <- list()
 sim$causeC$para <-
-  c(b0 = 8, b1 = 0.003, b2 = -0.08, b3 = log(1.01),
+  c(b0 = 6, b1 = 0.003, b2 = -0.2, b3 = log(1.01),
     b4 = log(3.11), b5 = log(3.55), b6 = log(1.001))
 sim$causeC$pred <- data.frame(
   sim$X_df, lambda = exp(sim$X%*%sim$causeC$para)
 )
 sim$causeC$pred$deaths <-
   rpois(nrow(sim$X_df), sim$causeC$pred$lambda)
+
+sim$causeD <- list()
+sim$causeD$para <-
+  c(b0 = 6, b1 = 0.003, b2 = 0.2, b3 = log(1.01),
+    b4 = log(3.11), b5 = log(3.55), b6 = log(1.001))
+sim$causeD$pred <- data.frame(
+  sim$X_df, lambda = exp(sim$X%*%sim$causeD$para)
+)
+sim$causeD$pred$deaths <-
+  rpois(nrow(sim$X_df), sim$causeD$pred$lambda)
+
 
 # Sum causes to total number of deaths ----------------------------
 
@@ -130,10 +140,12 @@ sim$total <-
     sim$X_df,
     deathsA = sim$causeA$pred$deaths,
     deathsB = sim$causeB$pred$deaths,
-    deathsC = sim$causeC$pred$deaths
+    deathsC = sim$causeC$pred$deaths,
+    deathsD = sim$causeD$pred$deaths
   )
 sim$total$deathsTotal <-
-  sim$total$deathsA + sim$total$deathsB + sim$total$deathsC
+  sim$total$deathsA + sim$total$deathsB + sim$total$deathsC +
+  sim$total$deathsD
 
 # Derive weekly death proportions by cause ------------------------
 
@@ -146,7 +158,8 @@ sim$prop <-
     # in given week, sex, and age
     pA = sim$total$deathsA / sim$total$deathsTotal,
     pB = sim$total$deathsB / sim$total$deathsTotal,
-    pC = sim$total$deathsC / sim$total$deathsTotal
+    pC = sim$total$deathsC / sim$total$deathsTotal,
+    pD = sim$total$deathsD / sim$total$deathsTotal
   )
 
 # The dataset as we would use it in the analysis ------------------
@@ -158,15 +171,6 @@ the_analysis_data$cv_flag <- ifelse(
 )
 the_analysis_data$stratum <-
   interaction(the_analysis_data$sex, the_analysis_data$age)
-
-# Visualize proportions -------------------------------------------
-
-ggplot(sim$prop) +
-  geom_line(aes(x = t, y = pA*deathsTotal)) +
-  geom_line(aes(x = t, y = pB*deathsTotal)) +
-  geom_line(aes(x = t, y = pC*deathsTotal)) +
-  facet_grid(age ~ sex) +
-  scale_y_log10()
 
 # Predict expected deaths by cause --------------------------------
 
@@ -308,7 +312,7 @@ XCOD <- function (
 
 df <- XCOD(
   df = the_analysis_data,
-  cols_prop = c('pA', 'pB', 'pC'),
+  cols_prop = c('pA', 'pB', 'pC', 'pD'),
   col_total = 'deathsTotal',
   col_stratum = 'stratum',
   col_origin_time = 't',
@@ -318,6 +322,39 @@ df <- XCOD(
   quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
   basis = 'ilr'
 )
+
+# Convert to long format ------------------------------------------
+
+df_long <-
+  df %>%
+  mutate(
+    DpA_observed = pA*deathsTotal,
+    DpB_observed = pB*deathsTotal,
+    DpC_observed = pC*deathsTotal,
+    DpD_observed = pD*deathsTotal
+  ) %>%
+  pivot_longer(cols = starts_with('Dp')) %>%
+  separate(col = name, into = c('part', 'stat'), sep = '_')
+
+# Visualize training and predicted proportions --------------------
+
+df_long %>%
+  filter(stat == 'AVG', cv_flag == 'test') %>%
+  ggplot() +
+  geom_area(
+    aes(x = t, y = value, fill = part),
+    data = df_long %>% filter(stat == 'observed', cv_flag == 'training')
+  ) +
+  geom_area(aes(x = t, y = value, fill = part)) +
+  facet_grid(age ~ sex, scales = 'free_y') +
+  scale_fill_brewer(type = 'qual', palette = 6) +
+  theme_minimal() +
+  labs(
+    title = 'Observed and forecasted deaths by cause',
+    fill = 'Cause of death',
+    y = 'Deaths',
+    x = 'Months since 2015'
+  )
 
 # Observed versus predicted versus true mean ----------------------
 
