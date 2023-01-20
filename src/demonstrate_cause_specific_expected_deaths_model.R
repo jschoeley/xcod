@@ -209,7 +209,9 @@ XCOD <- function (
   nsim = 1000, quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
   basis = 'ilr'
 ) {
-  
+
+  ## preparation
+    
   require(mgcv)
   require(coda.base)
   
@@ -218,6 +220,8 @@ XCOD <- function (
   
   df_training <- df[df$cv_flag == 'training',]
   df_prediction <- df
+  
+  ## model expected totals
   
   deathsTotal_form <- as.formula(paste0(
     col_total, "~",
@@ -234,6 +238,9 @@ XCOD <- function (
     data = df_training,
     family = poisson(link = 'log')
   )
+  
+  ## simulate from expected totals posterior predictive dist
+  
   deathsTotal_Xprd <-
     predict(deathsTotal_fit, newdata = df_prediction, type = 'lpmatrix')
   deathsTotal_beta <- coef(deathsTotal_fit)
@@ -248,6 +255,8 @@ XCOD <- function (
   L <- matrix(deathsTotal_lambda_sim, nrow = N, ncol = nsim)
   L <- cbind(exp(deathsTotal_Xprd%*%deathsTotal_beta), L)
 
+  ## model proportions
+  
   P <- as.matrix(df_training[,cols_prop])
   Plr <- coordinates(P, basis = basis)
   Plr_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p))
@@ -284,25 +293,74 @@ XCOD <- function (
       P_hat[,j,k] <- P_hat_j[,k]
   }
   
+  ## derive statistics of interest
+  
+  # Expected deaths by cause (mean + simulations)
   Dk_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
   for (k in 1:(p+1)) {
     Dk_hat[,-1,k] <-
       apply(P_hat[,-1,k]*L[,-1], 2, function (lambda_k) rpois(N, lambda_k))
     Dk_hat[,1,k] <- P_hat[,1,k]*L[,1]
   }
-  
+  # quantiles
   Dk_hat_quantiles <-
     aperm(
       apply(Dk_hat[,-1,], c(1,3), quantile, probs = quantiles,
-            na.rm = TRUE),
+            na.rm = TRUE, type = 1),
       c(2,1,3)
     )
   
+  # Observed deaths by cause
+  Dk_obs <- round(df[,cols_prop]*df[,col_total], digits = 0)
+
+  # Excess deaths by cause (mean + simulations)
+  Dk_xcs <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
   for (k in 1:(p+1)) {
-    X <- cbind(Dk_hat[,1,k], Dk_hat_quantiles[,,k])
+    Dk_xcs[,,k] <- Dk_obs[,k]-Dk_hat[,,k]
+  }
+  # quantiles
+  Dk_xcs_quantiles <-
+    aperm(
+      apply(Dk_xcs[,-1,], c(1,3), quantile, probs = quantiles,
+            na.rm = TRUE, type = 1),
+      c(2,1,3)
+    )
+  
+  # P-scores by cause (mean + simulations)
+  Dk_psc <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
+  for (k in 1:(p+1)) {
+    # note: infinities are possible here if expected deaths are 0
+    Dk_psc[,,k] <- Dk_xcs[,,k]/Dk_hat[,,k]*100
+  }
+  # quantiles
+  Dk_psc_quantiles <-
+    aperm(
+      apply(Dk_psc[,-1,], c(1,3), quantile, probs = quantiles,
+            na.rm = TRUE, type = 7),
+      c(2,1,3)
+    )
+  
+  # bind predictions and derived stats + quantiles to input data frame
+  for (k in 1:(p+1)) {
+    X <- cbind(
+      # observed
+      Dk_obs[,k],
+      # expected
+      Dk_hat[,1,k], Dk_hat_quantiles[,,k],
+      # excess
+      Dk_xcs[,1,k], Dk_xcs_quantiles[,,k],
+      # pscore
+      Dk_psc[,1,k], Dk_psc_quantiles[,,k]
+    )
     colnames(X) <- c(
-      paste0('D', cols_prop[k], '_AVG'),
-      paste0('D', cols_prop[k], '_Q', quantiles)
+      # observed
+      paste0('OBS_', cols_prop[k]),
+      # expected
+      paste0('XPC_', cols_prop[k], '_AVG'), paste0('XPC_', cols_prop[k], '_Q', quantiles),
+      # excess
+      paste0('XCS_', cols_prop[k], '_AVG'), paste0('XCS_', cols_prop[k], '_Q', quantiles),
+      # p-score
+      paste0('PSC_', cols_prop[k], '_AVG'), paste0('PSC_', cols_prop[k], '_Q', quantiles)
     )
     df <- cbind(df, X)
   }
@@ -327,27 +385,25 @@ df <- XCOD(
 
 df_long <-
   df %>%
-  mutate(
-    DpA_observed = pA*deathsTotal,
-    DpB_observed = pB*deathsTotal,
-    DpC_observed = pC*deathsTotal,
-    DpD_observed = pD*deathsTotal
-  ) %>%
-  pivot_longer(cols = starts_with('Dp')) %>%
-  separate(col = name, into = c('part', 'stat'), sep = '_')
+  pivot_longer(cols = starts_with(c('OBS', 'XPC', 'XCS', 'PSC'))) %>%
+  separate(col = name, into = c('stat', 'part', 'quantile'), sep = '_')
 
 # Visualize training and predicted proportions --------------------
 
 df_long %>%
-  filter(stat == 'AVG', cv_flag == 'test') %>%
   ggplot() +
   geom_area(
     aes(x = t, y = value, fill = part),
-    data = df_long %>% filter(stat == 'observed', cv_flag == 'training')
+    # plot observed counts by cause over training period
+    data = . %>% filter(stat == 'OBS', cv_flag == 'training')
   ) +
-  geom_area(aes(x = t, y = value, fill = part)) +
+  geom_area(
+    aes(x = t, y = value, fill = part),
+    # plot average expected counts by cause over test period
+    data = . %>% filter(stat == 'XPC', cv_flag == 'test', quantile == 'AVG')
+  ) +
   facet_grid(age ~ sex, scales = 'free_y') +
-  scale_fill_brewer(type = 'qual', palette = 6) +
+  scale_fill_brewer(type = 'div', palette = 9) +
   theme_minimal() +
   labs(
     title = 'Observed and forecasted deaths by cause',
@@ -356,31 +412,55 @@ df_long %>%
     x = 'Months since 2015'
   )
 
+ggsave('cover.png', path = './ass/',
+       device = ragg::agg_png, width = 170, height = 150, units = 'mm')
+
+# Visualize P-scores ----------------------------------------------
+
+# should be mostly non-significant in this case
+df %>%
+  filter(cv_flag == 'test') %>%
+  ggplot(aes(x = t)) +
+  geom_ribbon(
+    aes(ymin = PSC_pB_Q0.025, ymax = PSC_pB_Q0.975),
+    color = NA, fill = 'grey80') +
+  geom_hline(yintercept = 0) +
+  geom_line(
+    aes(y = PSC_pB_AVG), color = 'red'
+  ) +
+  facet_grid(age ~ sex, scales = 'free_y') +
+  theme_minimal() +
+  labs(
+    title = 'Percent excess for cause B',
+    y = 'Monthly P-score',
+    x = 'Months since 2015'
+  )
+
 # Observed versus predicted versus true mean ----------------------
 
 ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeA$pred) +
-  geom_point(aes(y = pA*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = DpA_Q0.025, ymax = DpA_Q0.975, fill = cv_flag),
+  geom_point(aes(y = OBS_pA, color = cv_flag)) +
+  geom_ribbon(aes(ymin = XPC_pA_Q0.025, ymax = XPC_pA_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = `DpA_AVG`, color = cv_flag), data = df) +
+  geom_line(aes(y = XPC_pA_AVG, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
 
 ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeB$pred) +
-  geom_point(aes(y = pB*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = DpB_Q0.025, ymax = DpB_Q0.975, fill = cv_flag),
+  geom_point(aes(y = OBS_pB, color = cv_flag)) +
+  geom_ribbon(aes(ymin = XPC_pB_Q0.025, ymax = XPC_pB_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = DpB_AVG, color = cv_flag), data = df) +
+  geom_line(aes(y = XPC_pB_AVG, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
 
 ggplot(df) +
   aes(x = t) +
   geom_line(aes(y = lambda), color = 'grey', data = sim$causeC$pred) +
-  geom_point(aes(y = pC*deathsTotal, color = cv_flag)) +
-  geom_ribbon(aes(ymin = DpC_Q0.025, ymax = DpC_Q0.975, fill = cv_flag),
+  geom_point(aes(y = OBS_pC, color = cv_flag)) +
+  geom_ribbon(aes(ymin = XPC_pC_Q0.025, ymax = XPC_pC_Q0.975, fill = cv_flag),
               color = NA, alpha = 0.1) +
-  geom_line(aes(y = DpC_AVG, color = cv_flag), data = df) +
+  geom_line(aes(y = XPC_pC_AVG, color = cv_flag), data = df) +
   facet_grid(age ~ sex, scales = 'free_y')
