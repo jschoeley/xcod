@@ -16,12 +16,264 @@
 library(shiny)
 library(tidyverse)
 
+# Functions -------------------------------------------------------
+
+#' Predict Expected Deaths By Cause
+#'
+#' @param df
+#'   A data frame.
+#' @param cols_prop
+#'   Character vector of column names giving the weekly death
+#'   proportions by cause.
+#' @param col_total
+#'   Quoted column name for total deaths.
+#' @param col_stratum 
+#'   Quoted column name for stratum.
+#' @param col_origin_time
+#'   Quoted column name for numeric time since origin
+#'   (e.g. months since Jan 2015).
+#' @param col_seasonal_time
+#'   Quoted column name for numeric seasonal time
+#'   (e.g. months into year).
+#' @param col_cvflag
+#'   Quoted column name for cross-validation flag column. Column
+#'   must be character with "training" for data used to fit the models
+#'   and test for time points to make predictions for.
+#' @param nsim
+#'   Number of simulation draws. Default = 1000.
+#' @param quantiles
+#'   Numeric vector of quantiles to report for predicted distribution.
+#' @param basis
+#'   The basis for the coda transformation of the data. Can be "ilr"
+#'   (default), "alr", or "cdp". See ?coda.base::coordinates.
+XCOD <- function (
+    df,
+    cols_prop, col_total, col_stratum, col_origin_time,
+    col_seasonal_time, col_cvflag,
+    nsim = 10, basis = 'ilr'
+) {
+  
+  ## preparation
+  
+  require(mgcv)      # for gam()
+  require(coda.base) # for compositional data analysis operations
+  
+  N = nrow(df)
+  p = length(cols_prop)-1
+  
+  idx_train <- which(df[,col_cvflag] == 'training')
+  vec_stratum <- df[,col_stratum]
+  # predict over whole data...
+  df_prediction <- df[,c(
+    col_stratum, col_origin_time, col_seasonal_time, col_cvflag,
+    col_total, cols_prop
+  )]
+  # standardize names
+  colnames(df_prediction) <- c('stratum', 'origin_time', 'seasonal_time',
+                               'cv_flag', 'OBS_ALLCAUSE', cols_prop)
+  # ...but train over this part of input data:
+  df_training <- df_prediction[idx_train,]
+  
+  ## model expected total deaths over time
+  
+  deathsTotal_form <- as.formula(paste0(
+    "OBS_ALLCAUSE~",
+    # log-linear time trend separate by stratum
+    "origin_time*stratum",
+    # cyclical spline for seasonality separate
+    # by stratum
+    "+s(seasonal_time, bs = 'cp', by = stratum)"
+  ))
+  deathsTotal_fit <- gam(
+    deathsTotal_form,
+    data = df_training,
+    family = poisson(link = 'log')
+  )
+  
+  ## simulate from expected totals posterior predictive dist
+  
+  # design matrix
+  deathsTotal_Xprd <-
+    predict(deathsTotal_fit, newdata = df_prediction, type = 'lpmatrix')
+  # coefficients
+  deathsTotal_beta <- coef(deathsTotal_fit)
+  # simulate coefficients from MV-Normal distribution
+  deathsTotal_beta_sim <- MASS::mvrnorm(
+    nsim, deathsTotal_beta,
+    vcov(deathsTotal_fit, freq = FALSE, unconditional = TRUE)
+  )
+  # derive simulated replications of linear predictor
+  # (rate of total deaths) 
+  deathsTotal_lambda_sim <- c(apply(
+    deathsTotal_beta_sim, 1,
+    FUN = function (b) exp(deathsTotal_Xprd%*%b)
+  ))
+  L <- matrix(deathsTotal_lambda_sim, nrow = N, ncol = nsim)
+  # add mean linear predictor as first column to simulations
+  L <- cbind(exp(deathsTotal_Xprd%*%deathsTotal_beta), L)
+  
+  ## model expected proportions of deaths by cause over time
+  
+  # transform proportions to log-ratio analysis space
+  P <- as.matrix(df_training[,cols_prop])
+  Plr <- coordinates(P, basis = basis)
+  Plr_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p))
+  
+  # model and extrapolate expected proportions in log-ratio space
+  # separate by cause...
+  props_form <- update.formula(deathsTotal_form, plr ~ .)
+  for (k in 1:p) {
+    the_data <- cbind(df_training, plr = Plr[,k])
+    # zero proportions are excluded from fitting
+    exclude_zero_props <- is.infinite(the_data$plr)
+    the_data <- the_data[!exclude_zero_props,]
+    prop_gam_fit <- gam(props_form,
+                        family = gaussian(link = 'identity'),
+                        data = the_data)
+    # simulate predicted proportions from fitted model
+    prop_gam_Xprd <-
+      predict(prop_gam_fit, newdata = df_prediction, type = 'lpmatrix')
+    prop_gam_beta <- coef(prop_gam_fit)
+    prop_gam_beta_sim <- MASS::mvrnorm(
+      nsim, prop_gam_beta,
+      vcov(prop_gam_fit, freq = FALSE, unconditional = TRUE)
+    )
+    prop_gam_plr_sim <- c(apply(
+      prop_gam_beta_sim, 1,
+      FUN = function (b) prop_gam_Xprd%*%b
+    ))
+    Plr_hat[,-1,k] <-
+      matrix(prop_gam_plr_sim, nrow = N, ncol = nsim)
+    Plr_hat[,1,k] <- prop_gam_Xprd%*%prop_gam_beta
+  }
+  
+  # convert predicted proportions from log-ratio to proportion space
+  P_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
+  for (j in 1:(nsim+1)) {
+    P_hat_j <- composition(Plr_hat[,j,], basis = basis)
+    for (k in 1:(p+1))
+      P_hat[,j,k] <- P_hat_j[,k]
+  }
+  
+  ## simulate expected deaths by cause
+  
+  # observed deaths by cause
+  Dk_obs <- round(df_prediction[,cols_prop]*df_prediction[,'OBS_ALLCAUSE'],
+                  digits = 0)
+  
+  # expected deaths by cause (mean + simulations)
+  Dk_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
+  for (k in 1:(p+1)) {
+    Dk_hat[,-1,k] <-
+      apply(P_hat[,-1,k]*L[,-1], 2, function (lambda_k) rpois(N, lambda_k))
+    Dk_hat[,1,k] <- P_hat[,1,k]*L[,1]
+  }
+  
+  # bind cause-specific predictions and simulations to input data
+  for (k in 1:(p+1)) {
+    X <- cbind(
+      # observed
+      Dk_obs[,k],
+      # expected average & simulated
+      Dk_hat[,,k]
+    )
+    colnames(X) <- c(
+      # observed
+      paste0('OBS_', cols_prop[k]),
+      # expected average & simulated
+      paste0('XPC_AVG_', cols_prop[k]),
+      paste0('XPC_SIM', 1:nsim, '_', cols_prop[k])
+    )
+    df_prediction <- cbind(df_prediction, X)
+  }
+  # sum cause-specific predictions and simulations to totals and
+  # bind to input data
+  X <- cbind(
+    # expected average & simulated
+    apply(Dk_hat, 1:2, sum)
+  )
+  colnames(X) <- c(
+    # expected average & simulated
+    paste0('XPC_AVG_ALLCAUSE'),
+    paste0('XPC_SIM', 1:nsim, '_ALLCAUSE')
+  )
+  df_prediction <- cbind(df_prediction, X)
+  
+  return(df_prediction)
+}
+
+EnsureSortedXCOD <- function (xcod_out) {
+  xcod_out[order(xcod_out[['stratum']],
+                 xcod_out[['origin_time']],
+                 xcod_out[['seasonal_time']], decreasing = FALSE),]
+}
+
+# return data frame of row-wise quantiles over columns of X
+Rowquantiles <- function (X, prob, type = 4, na.rm = TRUE) {
+  t(apply(X, 1, quantile, prob = prob, type = type, na.rm = na.rm, names = FALSE))
+}
+
+GetExcessByCause <- function (
+    xcod_out, name_parts,
+    measure = 'absolute',
+    quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
+    cumulative = FALSE, origin_time_start_of_cumulation = 0
+) {
+  xcod_sorted <- EnsureSortedXCOD(xcod_out)
+  # data columns
+  Y <- xcod_sorted[,grepl('XPC_|OBS_',colnames(xcod_sorted))]
+  # label columns
+  X <- xcod_sorted[,c('stratum', 'origin_time', 'seasonal_time', 'cv_flag')]
+  # accumulate data columns if requested
+  if (isTRUE(cumulative)) {
+    # set data to 0 for time points prior to accumulation start
+    # so that we only accumulate from the accumulation start
+    vec_timeselect <- X[['origin_time']] < origin_time_start_of_cumulation
+    Y[vec_timeselect,] <- 0
+    # this restarts the accumulation of a data vector whenever the
+    # stratum vector changes in value
+    vec_stratum <- X[['stratum']]
+    Y <- apply(Y, 2, function (x) ave(x, vec_stratum, FUN = cumsum))
+    # set values to NA prior to accumulation start so that derived
+    # values become NA as well
+    Y[vec_timeselect,] <- NA
+  }
+  for (part in name_parts) {
+    OBS <- Y[,paste0('OBS_', part)]
+    j <- grepl(paste0('^XPC_SIM[[:digit:]]+_',part,'$'), colnames(Y))
+    if (identical(measure, 'observed')) {
+      MEASURE <- as.matrix(OBS)
+    }
+    if (identical(measure, 'expected')) {
+      MEASURE <- Y[,j]
+    }
+    if (identical(measure, 'absolute')) {
+      MEASURE <- apply(Y[,j], 2, function (XPC_SIM) {round(OBS-XPC_SIM,0)})
+    }
+    if (identical(measure, 'pscore')) {
+      MEASURE <- apply(Y[,j], 2, function (XPC_SIM) {(OBS-XPC_SIM)/XPC_SIM*100})
+    }
+    if (identical(measure, 'ratio')) {
+      MEASURE <- apply(Y[,j], 2, function (XPC_SIM) {OBS/XPC_SIM})
+    }
+    # get quantiles
+    Q <- Rowquantiles(MEASURE, quantiles, type = 1)
+    colnames(Q) <-
+      paste0('Q', substr(
+        formatC(quantiles, format = 'f', digits = 3),
+        start = 3, stop = 5
+      ), '_', part)
+    X <- cbind(X,Q)
+  }
+  return(X)
+}
+
 # Setup data grid -------------------------------------------------
 
 sim <- list()
 sim$dims <- list(
   # t: months since origin
-  t   = 1:(12*3),
+  t   = 0:(12*3-1),
   # w: months since start of year
   w   = 1:12,
   # sex
@@ -39,14 +291,18 @@ sim$X_df <-
     sex = sim$dims$sex,
     # discrete age
     age = sim$dims$age
+  ) %>%
+  mutate(
+    excess_start = ifelse(t < 30, 0, 1)
   )
 # months into year
 sim$X_df$w <- sim$X_df$t%%12+1
 # we use the following model to specify the expected number of deaths
 # for a given cause by time, month of year, sex, and age group
-# lambda_t = exp( b0 + b1*t + b2*sin(2*pi*w/12) + b3*sex + b4*sex*t +
-#                b5*age1 + b6*age2 + b7*age3 )
-sim$X <- model.matrix(~t + sin(2*pi*w/12) + sex + sex*t + age, data = sim$X_df)
+# lambda_t = exp( b0 + b1*t + b2*sin(2*pi*w/12) + b3*sex + b4*age2 +
+#                b5*age3 + b6*sex*t + b7*excess_start)
+sim$X <- model.matrix(~1 + t + sin(2*pi*w/12) + sex + age + sex:t, data = sim$X_df)
+sim$X <- cbind(sim$X, excess_start = sim$X_df$excess_start)
 
 # Visualize simulation parameter choices --------------------------
 
@@ -95,7 +351,7 @@ server <- function(input, output) {
 sim$causeA <- list()
 sim$causeA$para <-
   c(b0 = 4, b1 = 0.01, b2 = 0.1, b3 = log(0.95),
-    b4 = log(4.87), b5 = log(8.44), b6 = log(0.98))
+    b4 = log(4.87), b5 = log(8.44), b6 = log(0.98), b7 = 0)
 sim$causeA$pred <- data.frame(
   sim$X_df, lambda = exp(sim$X%*%sim$causeA$para)
 )
@@ -105,7 +361,7 @@ sim$causeA$pred$deaths <-
 sim$causeB <- list()
 sim$causeB$para <-
   c(b0 = 6, b1 = -0.003, b2 = 0.001, b3 = log(1.17),
-    b4 = log(4.14), b5 = log(7.66), b6 = log(0.99))
+    b4 = log(4.14), b5 = log(7.66), b6 = log(0.99), b7 = 0)
 sim$causeB$pred <- data.frame(
   sim$X_df, lambda = exp(sim$X%*%sim$causeB$para)
 )
@@ -115,7 +371,7 @@ sim$causeB$pred$deaths <-
 sim$causeC <- list()
 sim$causeC$para <-
   c(b0 = 6, b1 = 0.003, b2 = -0.2, b3 = log(1.01),
-    b4 = log(3.11), b5 = log(3.55), b6 = log(1.001))
+    b4 = log(3.11), b5 = log(3.55), b6 = log(1.001), b7 = 0.2)
 sim$causeC$pred <- data.frame(
   sim$X_df, lambda = exp(sim$X%*%sim$causeC$para)
 )
@@ -125,13 +381,12 @@ sim$causeC$pred$deaths <-
 sim$causeD <- list()
 sim$causeD$para <-
   c(b0 = 6, b1 = 0.003, b2 = 0.2, b3 = log(1.01),
-    b4 = log(3.11), b5 = log(3.55), b6 = log(1.001))
+    b4 = log(3.11), b5 = log(3.55), b6 = log(1.001), b7 = 1)
 sim$causeD$pred <- data.frame(
   sim$X_df, lambda = exp(sim$X%*%sim$causeD$para)
 )
 sim$causeD$pred$deaths <-
   rpois(nrow(sim$X_df), sim$causeD$pred$lambda)
-
 
 # Sum causes to total number of deaths ----------------------------
 
@@ -174,201 +429,9 @@ the_analysis_data$stratum <-
 
 # Predict expected deaths by cause --------------------------------
 
-#' Predict Expected Deaths By Cause
-#'
-#' @param df
-#'   A data frame.
-#' @param cols_prop
-#'   Character vector of column names giving the weekly death
-#'   proportions by cause.
-#' @param col_total
-#'   Quoted column name for total deaths.
-#' @param col_stratum 
-#'   Quoted column name for stratum.
-#' @param col_origin_time
-#'   Quoted column name for numeric time since origin
-#'   (e.g. months since Jan 2015).
-#' @param col_seasonal_time
-#'   Quoted column name for numeric seasonal time
-#'   (e.g. months into year).
-#' @param col_cvflag
-#'   Quoted column name for cross-validation flag column. Column
-#'   must be character with "training" for data used to fit the models
-#'   and test for time points to make predictions for.
-#' @param nsim
-#'   Number of simulation draws. Default = 1000.
-#' @param quantiles
-#'   Numeric vector of quantiles to report for predicted distribution.
-#' @param basis
-#'   The basis for the coda transformation of the data. Can be "ilr"
-#'   (default), "alr", or "cdp". See ?coda.base::coordinates.
-XCOD <- function (
-  df,
-  cols_prop, col_total, col_stratum, col_origin_time,
-  col_seasonal_time, col_cvflag,
-  nsim = 1000, quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
-  basis = 'ilr'
-) {
+expected <- list()
 
-  ## preparation
-    
-  require(mgcv)
-  require(coda.base)
-  
-  N = nrow(df)
-  p = length(cols_prop)-1
-  
-  df_training <- df[df$cv_flag == 'training',]
-  df_prediction <- df
-  
-  ## model expected totals
-  
-  deathsTotal_form <- as.formula(paste0(
-    col_total, "~",
-    # log-linear time trend separate by stratum
-    col_origin_time, "*", col_stratum, "+",
-    # cyclical spline for seasonality separate
-    # by stratum
-    "s(",
-    col_seasonal_time,
-    ", bs = 'cp', by = ", col_stratum, ")"
-  ))
-  deathsTotal_fit <- gam(
-    deathsTotal_form,
-    data = df_training,
-    family = poisson(link = 'log')
-  )
-  
-  ## simulate from expected totals posterior predictive dist
-  
-  deathsTotal_Xprd <-
-    predict(deathsTotal_fit, newdata = df_prediction, type = 'lpmatrix')
-  deathsTotal_beta <- coef(deathsTotal_fit)
-  deathsTotal_beta_sim <- MASS::mvrnorm(
-    nsim, deathsTotal_beta,
-    vcov(deathsTotal_fit, freq = FALSE, unconditional = TRUE)
-  )
-  deathsTotal_lambda_sim <- c(apply(
-    deathsTotal_beta_sim, 1,
-    FUN = function (b) exp(deathsTotal_Xprd%*%b)
-  ))
-  L <- matrix(deathsTotal_lambda_sim, nrow = N, ncol = nsim)
-  L <- cbind(exp(deathsTotal_Xprd%*%deathsTotal_beta), L)
-
-  ## model proportions
-  
-  P <- as.matrix(df_training[,cols_prop])
-  Plr <- coordinates(P, basis = basis)
-  Plr_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p))
-  
-  props_form <- update.formula(deathsTotal_form, plr ~ .)
-  for (k in 1:p) {
-    the_data <- cbind(df_training, plr = Plr[,k])
-    exclude_zero_props <- is.infinite(the_data$plr)
-    the_data <- the_data[!exclude_zero_props,]
-    prop_gam_fit <- gam(props_form,
-                        family = gaussian(link = 'identity'),
-                        data = the_data
-    )
-    prop_gam_Xprd <-
-      predict(prop_gam_fit, newdata = df_prediction, type = 'lpmatrix')
-    prop_gam_beta <- coef(prop_gam_fit)
-    prop_gam_beta_sim <- MASS::mvrnorm(
-      nsim, prop_gam_beta,
-      vcov(prop_gam_fit, freq = FALSE, unconditional = TRUE)
-    )
-    prop_gam_plr_sim <- c(apply(
-      prop_gam_beta_sim, 1,
-      FUN = function (b) prop_gam_Xprd%*%b
-    ))
-    Plr_hat[,-1,k] <-
-      matrix(prop_gam_plr_sim, nrow = N, ncol = nsim)
-    Plr_hat[,1,k] <- prop_gam_Xprd%*%prop_gam_beta
-  }
-  
-  P_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
-  for (j in 1:nsim) {
-    P_hat_j <- composition(Plr_hat[,j,], basis = basis)
-    for (k in 1:(p+1))
-      P_hat[,j,k] <- P_hat_j[,k]
-  }
-  
-  ## derive statistics of interest
-  
-  # Expected deaths by cause (mean + simulations)
-  Dk_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
-  for (k in 1:(p+1)) {
-    Dk_hat[,-1,k] <-
-      apply(P_hat[,-1,k]*L[,-1], 2, function (lambda_k) rpois(N, lambda_k))
-    Dk_hat[,1,k] <- P_hat[,1,k]*L[,1]
-  }
-  # quantiles
-  Dk_hat_quantiles <-
-    aperm(
-      apply(Dk_hat[,-1,], c(1,3), quantile, probs = quantiles,
-            na.rm = TRUE, type = 1),
-      c(2,1,3)
-    )
-  
-  # Observed deaths by cause
-  Dk_obs <- round(df[,cols_prop]*df[,col_total], digits = 0)
-
-  # Excess deaths by cause (mean + simulations)
-  Dk_xcs <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
-  for (k in 1:(p+1)) {
-    Dk_xcs[,,k] <- Dk_obs[,k]-Dk_hat[,,k]
-  }
-  # quantiles
-  Dk_xcs_quantiles <-
-    aperm(
-      apply(Dk_xcs[,-1,], c(1,3), quantile, probs = quantiles,
-            na.rm = TRUE, type = 1),
-      c(2,1,3)
-    )
-  
-  # P-scores by cause (mean + simulations)
-  Dk_psc <- array(NA, dim = list(i = N, j = nsim+1, p = p+1))
-  for (k in 1:(p+1)) {
-    # note: infinities are possible here if expected deaths are 0
-    Dk_psc[,,k] <- Dk_xcs[,,k]/Dk_hat[,,k]*100
-  }
-  # quantiles
-  Dk_psc_quantiles <-
-    aperm(
-      apply(Dk_psc[,-1,], c(1,3), quantile, probs = quantiles,
-            na.rm = TRUE, type = 7),
-      c(2,1,3)
-    )
-  
-  # bind predictions and derived stats + quantiles to input data frame
-  for (k in 1:(p+1)) {
-    X <- cbind(
-      # observed
-      Dk_obs[,k],
-      # expected
-      Dk_hat[,1,k], Dk_hat_quantiles[,,k],
-      # excess
-      Dk_xcs[,1,k], Dk_xcs_quantiles[,,k],
-      # pscore
-      Dk_psc[,1,k], Dk_psc_quantiles[,,k]
-    )
-    colnames(X) <- c(
-      # observed
-      paste0('OBS_', cols_prop[k]),
-      # expected
-      paste0('XPC_', cols_prop[k], '_AVG'), paste0('XPC_', cols_prop[k], '_Q', quantiles),
-      # excess
-      paste0('XCS_', cols_prop[k], '_AVG'), paste0('XCS_', cols_prop[k], '_Q', quantiles),
-      # p-score
-      paste0('PSC_', cols_prop[k], '_AVG'), paste0('PSC_', cols_prop[k], '_Q', quantiles)
-    )
-    df <- cbind(df, X)
-  }
-  
-  return(df)
-}
-
-df <- XCOD(
+expected$agesex <- XCOD(
   df = the_analysis_data,
   cols_prop = c('pA', 'pB', 'pC', 'pD'),
   col_total = 'deathsTotal',
@@ -376,33 +439,116 @@ df <- XCOD(
   col_origin_time = 't',
   col_seasonal_time = 'w',
   col_cvflag = 'cv_flag',
-  nsim = 1000,
-  quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
+  nsim = 100,
   basis = 'ilr'
 )
 
-# Convert to long format ------------------------------------------
 
-df_long <-
-  df %>%
-  pivot_longer(cols = starts_with(c('OBS', 'XPC', 'XCS', 'PSC'))) %>%
-  separate(col = name, into = c('stat', 'part', 'quantile'), sep = '_')
+# Aggregate observed and expected over age-sex --------------------
+
+library(data.table)
+
+expected$agesex_dt <- as.data.table(expected$agesex)
+
+expected$strata_cols <- c('stratum', 'origin_time', 'seasonal_time', 'cv_flag')
+expected$value_cols <-
+  c(
+    grep('XPC_|OBS_', names(expected$agesex_dt), value = TRUE)
+  )
+
+expected$total <-
+  groupingsets(
+    expected$agesex_dt,
+    j = lapply(.SD, sum),
+    by = expected$strata_cols,
+    sets = list(
+      c('origin_time', 'seasonal_time', 'cv_flag')
+    ),
+    .SDcols = expected$value_cols
+  ) %>%
+  mutate(stratum = 'Total') %>%
+  as.data.frame()
+
+# Demonstrate derivation of excess statistics ---------------------
+
+# pscores by cause
+GetExcessByCause(
+  # output of XCOD function
+  xcod_out = expected$agesex,
+  # parts of interest
+  name_parts = c('pA', 'pB', 'pC', 'pD'),
+  # what measure to return
+  measure = 'pscore',
+  # quantiles of interest
+  quantiles = c(0.1, 0.5, 0.9)
+)
+
+# cumulative pscores starting from time 30
+GetExcessByCause(
+  xcod_out = expected_agesex,
+  name_parts = c('pA', 'pB', 'pC', 'pD'),
+  measure = 'pscore',
+  quantiles = c(0.1, 0.5, 0.9),
+  # cumulative measures
+  cumulative = TRUE,
+  # accumulation starts here
+  origin_time_start_of_cumulation = 30
+)
+
+# absolute cumulative number of excess by cause
+# starting from time 25
+GetExcessByCause(
+  xcod_out = expected_agesex,
+  name_parts = c('pA', 'pB', 'pC', 'pD'),
+  measure = 'absolute',
+  quantiles = c(0.1, 0.5, 0.9),
+  # cumulative measures
+  cumulative = TRUE,
+  # accumulation starts here
+  origin_time_start_of_cumulation = 25
+)
+
+# all cause p-scores
+GetExcessByCause(
+  xcod_out = expected_agesex,
+  name_parts = c('ALLCAUSE'),
+  measure = 'pscore',
+  quantiles = c(0.1, 0.5, 0.9)
+)
 
 # Visualize training and predicted proportions --------------------
 
-df_long %>%
+observed_vs_expected <- list()
+observed_vs_expected$data <- list()
+observed_vs_expected$data <-
+  bind_rows(
+    expected = GetExcessByCause(
+      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD'),
+      measure = 'expected'
+    ),
+    observed = GetExcessByCause(
+      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD'),
+      measure = 'observed'
+    ),
+    .id = 'measure'
+  ) %>%
+  pivot_longer(cols = starts_with('Q')) %>%
+  separate(col = name, into = c('quantile', 'part'), sep = '_')
+
+observed_vs_expected$data %>%
   ggplot() +
   geom_area(
-    aes(x = t, y = value, fill = part),
+    aes(x = origin_time, y = value, fill = part),
     # plot observed counts by cause over training period
-    data = . %>% filter(stat == 'OBS', cv_flag == 'training')
+    data = . %>% filter(cv_flag == 'training', measure == 'observed')
   ) +
   geom_area(
-    aes(x = t, y = value, fill = part),
+    aes(x = origin_time, y = value, fill = part),
     # plot average expected counts by cause over test period
-    data = . %>% filter(stat == 'XPC', cv_flag == 'test', quantile == 'AVG')
+    data = . %>% filter(cv_flag == 'test', measure == 'expected',
+                        quantile == 'Q500')
   ) +
-  facet_grid(age ~ sex, scales = 'free_y') +
+  facet_wrap(~ stratum, ncol = 2, scales = 'free_y') +
   scale_fill_brewer(type = 'div', palette = 9) +
   theme_minimal() +
   labs(
@@ -417,50 +563,28 @@ ggsave('cover.png', path = './ass/',
 
 # Visualize P-scores ----------------------------------------------
 
-# should be mostly non-significant in this case
-df %>%
+expected$total %>%
+  GetExcessByCause(
+    name_parts = c('pA', 'pB', 'pC', 'pD'),
+    measure = 'pscore'
+  ) %>%
+  pivot_longer(cols = starts_with('Q')) %>%
+  separate(col = name, into = c('quantile', 'part'), sep = '_') %>%
+  pivot_wider(names_from = quantile, values_from = value) %>%
   filter(cv_flag == 'test') %>%
-  ggplot(aes(x = t)) +
+  ggplot(aes(x = origin_time)) +
   geom_ribbon(
-    aes(ymin = PSC_pB_Q0.025, ymax = PSC_pB_Q0.975),
+    aes(ymin = Q025, ymax = Q975),
     color = NA, fill = 'grey80') +
   geom_hline(yintercept = 0) +
   geom_line(
-    aes(y = PSC_pB_AVG), color = 'red'
+    aes(y = Q500), color = 'red'
   ) +
-  facet_grid(age ~ sex, scales = 'free_y') +
+  scale_x_continuous(breaks = 0:40) +
+  facet_wrap(~ part) +
   theme_minimal() +
   labs(
-    title = 'Percent excess for cause B',
+    title = 'Percent excess by cause',
     y = 'Monthly P-score',
     x = 'Months since 2015'
   )
-
-# Observed versus predicted versus true mean ----------------------
-
-ggplot(df) +
-  aes(x = t) +
-  geom_line(aes(y = lambda), color = 'grey', data = sim$causeA$pred) +
-  geom_point(aes(y = OBS_pA, color = cv_flag)) +
-  geom_ribbon(aes(ymin = XPC_pA_Q0.025, ymax = XPC_pA_Q0.975, fill = cv_flag),
-              color = NA, alpha = 0.1) +
-  geom_line(aes(y = XPC_pA_AVG, color = cv_flag), data = df) +
-  facet_grid(age ~ sex, scales = 'free_y')
-
-ggplot(df) +
-  aes(x = t) +
-  geom_line(aes(y = lambda), color = 'grey', data = sim$causeB$pred) +
-  geom_point(aes(y = OBS_pB, color = cv_flag)) +
-  geom_ribbon(aes(ymin = XPC_pB_Q0.025, ymax = XPC_pB_Q0.975, fill = cv_flag),
-              color = NA, alpha = 0.1) +
-  geom_line(aes(y = XPC_pB_AVG, color = cv_flag), data = df) +
-  facet_grid(age ~ sex, scales = 'free_y')
-
-ggplot(df) +
-  aes(x = t) +
-  geom_line(aes(y = lambda), color = 'grey', data = sim$causeC$pred) +
-  geom_point(aes(y = OBS_pC, color = cv_flag)) +
-  geom_ribbon(aes(ymin = XPC_pC_Q0.025, ymax = XPC_pC_Q0.975, fill = cv_flag),
-              color = NA, alpha = 0.1) +
-  geom_line(aes(y = XPC_pC_AVG, color = cv_flag), data = df) +
-  facet_grid(age ~ sex, scales = 'free_y')
