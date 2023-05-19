@@ -158,7 +158,7 @@ XCOD <- function (
   ## simulate expected deaths by cause
   
   # observed deaths by cause
-  Dk_obs <- round(df_prediction[,cols_prop]*df_prediction[,'OBS_ALLCAUSE'],
+  Dk_obs <- round(df_prediction[,cols_prop]*df_prediction[['OBS_ALLCAUSE']],
                   digits = 0)
   
   # expected deaths by cause (mean + simulations)
