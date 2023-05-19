@@ -220,7 +220,11 @@ GetExcessByCause <- function (
     cumulative = FALSE, origin_time_start_of_cumulation = 0
 ) {
   
-  nsim = 100
+  # forgiveness please, this info should really be explicit in xcod_out
+  nsim = max(as.integer(
+    sub('(^.+_SIM)([[:digit:]]+)(.*$)','\\2',
+        grep('[[:digit:]]',names(xcod_out), value = TRUE))
+  ))
   nrow = NROW(xcod_out)
   xcod_sorted <- EnsureSortedXCOD(xcod_out)
   
