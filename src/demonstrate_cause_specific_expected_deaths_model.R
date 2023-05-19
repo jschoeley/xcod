@@ -219,11 +219,66 @@ GetExcessByCause <- function (
     quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
     cumulative = FALSE, origin_time_start_of_cumulation = 0
 ) {
+  
+  nsim = 100
+  nrow = NROW(xcod_out)
   xcod_sorted <- EnsureSortedXCOD(xcod_out)
+  
   # data columns
   Y <- xcod_sorted[,grepl('XPC_|OBS_',colnames(xcod_sorted))]
   # label columns
   X <- xcod_sorted[,c('stratum', 'origin_time', 'seasonal_time', 'cv_flag')]
+  
+  # aggregate parts if requested
+  if (is.list(name_parts)) {
+    amalgamation_names <- names(name_parts)
+    amalgamation_parts <- name_parts
+    Y <- Map(function (x, y) {
+      name <- x
+      parts <- unlist(y)
+      n_parts <- length(parts)
+      
+      # OBS
+      OBS_colnames <- grep(paste0('OBS_', parts, collapse = '|'),
+                           colnames(Y), value = TRUE)
+      OBS_parts <- matrix(unlist(Y[,OBS_colnames]),
+                          nrow = nrow, ncol = n_parts)
+      OBS_amalgamation <- rowSums(OBS_parts)
+      # XPC AVG
+      XPC_AVG_colnames <- grep(paste0('XPC_AVG_', parts, collapse = '|'),
+                               colnames(Y), value = TRUE)
+      XPC_AVG_parts <- matrix(unlist(Y[,XPC_AVG_colnames]),
+                              nrow = nrow, ncol = n_parts)
+      XPC_AVG_amalgamation <- rowSums(XPC_AVG_parts)
+      # XPC SIM
+      XPC_SIM_colnames <- grep(paste0('XPC_SIM.+_', parts, collapse = '|'),
+                               colnames(Y), value = TRUE)
+      XPC_SIM_parts <- array(
+        unlist(Y[,XPC_SIM_colnames]),
+        dim = c(nrow, nsim, n_parts)
+      )
+      XPC_SIM_amalgamation <- apply(XPC_SIM_parts, 1:2, sum)
+      # XCOD amalgamation
+      xcod_amalgamation <- cbind(
+        OBS_amalgamation, XPC_AVG_amalgamation, XPC_SIM_amalgamation
+      )
+      colnames(xcod_amalgamation) <-
+        c(paste0(c('OBS_', 'XPC_AVG_'), name),
+          paste0('XPC_SIM', 1:100, '_', name))
+      
+      return(xcod_amalgamation)
+    },
+    amalgamation_names, amalgamation_parts)
+    
+    # reorder columns
+    Y <- do.call('cbind', Y)
+    Y <- Y[,c(which(grepl('OBS',colnames(Y))),
+              which(grepl('XPC_AVG',colnames(Y))),
+              which(grepl('XPC_SIM',colnames(Y))))]
+  } else {
+    amalgamation_names <- name_parts
+  }
+  
   # accumulate data columns if requested
   if (isTRUE(cumulative)) {
     # set data to 0 for time points prior to accumulation start
@@ -238,7 +293,8 @@ GetExcessByCause <- function (
     # values become NA as well
     Y[vec_timeselect,] <- NA
   }
-  for (part in name_parts) {
+
+  for (part in amalgamation_names) {
     OBS <- Y[,paste0('OBS_', part)]
     j <- grepl(paste0('^XPC_SIM[[:digit:]]+_',part,'$'), colnames(Y))
     if (identical(measure, 'observed')) {
@@ -443,7 +499,6 @@ expected$agesex <- XCOD(
   basis = 'ilr'
 )
 
-
 # Aggregate observed and expected over age-sex --------------------
 
 library(data.table)
@@ -474,18 +529,19 @@ expected$total <-
 # pscores by cause
 GetExcessByCause(
   # output of XCOD function
-  xcod_out = expected$agesex,
+  xcod_out = expected$total,
   # parts of interest
-  name_parts = c('pA', 'pB', 'pC', 'pD'),
+  name_parts = c('ALLCAUSE'),
   # what measure to return
   measure = 'pscore',
   # quantiles of interest
-  quantiles = c(0.1, 0.5, 0.9)
+  quantiles = c(0.1, 0.5, 0.9),
+  cumulative = FALSE, origin_time_start_of_cumulation = 25
 )
 
 # cumulative pscores starting from time 30
 GetExcessByCause(
-  xcod_out = expected_agesex,
+  xcod_out = expected$agesex,
   name_parts = c('pA', 'pB', 'pC', 'pD'),
   measure = 'pscore',
   quantiles = c(0.1, 0.5, 0.9),
@@ -498,7 +554,7 @@ GetExcessByCause(
 # absolute cumulative number of excess by cause
 # starting from time 25
 GetExcessByCause(
-  xcod_out = expected_agesex,
+  xcod_out = expected$agesex,
   name_parts = c('pA', 'pB', 'pC', 'pD'),
   measure = 'absolute',
   quantiles = c(0.1, 0.5, 0.9),
@@ -510,10 +566,26 @@ GetExcessByCause(
 
 # all cause p-scores
 GetExcessByCause(
-  xcod_out = expected_agesex,
+  xcod_out = expected$agesex,
   name_parts = c('ALLCAUSE'),
   measure = 'pscore',
   quantiles = c(0.1, 0.5, 0.9)
+)
+
+# p-scores for causes A & B combined into AB and C
+GetExcessByCause(
+  xcod_out = expected$agesex,
+  name_parts = list(AB = c('pA', 'pB'), C = 'pC', D = 'pD'),
+  measure = 'absolute',
+  quantiles = c(0.1, 0.5, 0.9)
+)
+
+# test if causes ABCD combined give same results as ALLCAUSE
+GetExcessByCause(
+  xcod_out = expected$agesex,
+  name_parts = list(ABCD = c('pA', 'pB', 'pC', 'pD'), ALLCAUSE = 'ALLCAUSE'),
+  measure = 'absolute',
+  quantiles = c(0.1, 0.5, 0.9), cumulative = TRUE
 )
 
 # Visualize training and predicted proportions --------------------
