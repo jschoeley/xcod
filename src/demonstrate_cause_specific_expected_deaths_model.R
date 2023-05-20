@@ -576,7 +576,7 @@ GetExcessByCause(
   quantiles = c(0.1, 0.5, 0.9)
 )
 
-# p-scores for causes A & B combined into AB and C
+# p-scores for causes A & B combined into AB, as well as C & D
 GetExcessByCause(
   xcod_out = expected$agesex,
   name_parts = list(AB = c('pA', 'pB'), C = 'pC', D = 'pD'),
