@@ -255,7 +255,7 @@ GetExcessByCause <- function (
       )
       colnames(xcod_amalgamation) <-
         c(paste0(c('OBS_', 'XPC_AVG_'), name),
-          paste0('XPC_SIM', 1:100, '_', name))
+          paste0('XPC_SIM', 1:nsim, '_', name))
       
       return(xcod_amalgamation)
     },
