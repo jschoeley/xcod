@@ -28,7 +28,9 @@ Rowquantiles <- function (X, prob, type = 4, na.rm = TRUE) {
 #'   all or many zero-shares. Character string.
 #' @param cols_prop
 #'   Character vector of column names giving the weekly death
-#'   proportions by cause.
+#'   proportions by cause. Preface column names with a minus to declare
+#'   them as "sparse" and to model declared proportions with the sparse
+#'   model.
 #' @param col_total
 #'   Quoted column name for total deaths.
 #' @param col_stratum 
@@ -52,8 +54,8 @@ Rowquantiles <- function (X, prob, type = 4, na.rm = TRUE) {
 #'   (default), "alr", or "cdp". See ?coda.base::coordinates.
 XCOD <- function (
     df,
-    formula_total = "s(origin_time, bs = 'tp', fx = TRUE, k = 3) + s(seasonal_time, bs = 'cp')",
-    formula_prop_dense = "s(origin_time, bs = 'tp', fx = TRUE, k = 3) + s(seasonal_time, bs = 'cp')",
+    formula_total = "origin_time + s(seasonal_time, bs = 'cp')",
+    formula_prop_dense = "origin_time + s(seasonal_time, bs = 'cp')",
     formula_prop_sparse = "1",
     cols_prop, col_total, col_stratum = NULL, col_origin_time,
     col_seasonal_time, col_cvflag,
