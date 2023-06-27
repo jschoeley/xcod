@@ -203,7 +203,7 @@ expected$agesex <- map(
     stratum_subset <- filter(the_analysis_data, stratum == .x)
     XCOD(
       df = stratum_subset,
-      cols_prop = c('pA', 'pB', 'pC', 'pD', 'pE'),
+      cols_prop = c('pA', 'pB', 'pC', 'pD', '-pE'),
       col_total = 'deathsTotal',
       col_origin_time = 't',
       col_seasonal_time = 'w',
