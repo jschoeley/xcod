@@ -140,6 +140,17 @@ sim$causeD$pred <- data.frame(
 sim$causeD$pred$deaths <-
   rpois(nrow(sim$X_df), sim$causeD$pred$lambda)
 
+sim$causeE <- list()
+sim$causeE$para <-
+  c(b0 = 0, b1 = 0.003, b2 = 0.2, b3 = log(1.01),
+    b4 = log(3.11), b5 = log(3.55), b6 = log(1.001), b7 = 0)
+sim$causeE$pred <- data.frame(
+  sim$X_df, lambda = exp(sim$X%*%sim$causeE$para)
+)
+sim$causeE$pred$deaths <-
+  rpois(nrow(sim$X_df), sim$causeE$pred$lambda)
+
+
 # Sum causes to total number of deaths ----------------------------
 
 sim$total <-
@@ -148,11 +159,12 @@ sim$total <-
     deathsA = sim$causeA$pred$deaths,
     deathsB = sim$causeB$pred$deaths,
     deathsC = sim$causeC$pred$deaths,
-    deathsD = sim$causeD$pred$deaths
+    deathsD = sim$causeD$pred$deaths,
+    deathsE = sim$causeE$pred$deaths
   )
 sim$total$deathsTotal <-
   sim$total$deathsA + sim$total$deathsB + sim$total$deathsC +
-  sim$total$deathsD
+  sim$total$deathsD + sim$total$deathsE
 
 # Derive weekly death proportions by cause ------------------------
 
@@ -166,7 +178,8 @@ sim$prop <-
     pA = sim$total$deathsA / sim$total$deathsTotal,
     pB = sim$total$deathsB / sim$total$deathsTotal,
     pC = sim$total$deathsC / sim$total$deathsTotal,
-    pD = sim$total$deathsD / sim$total$deathsTotal
+    pD = sim$total$deathsD / sim$total$deathsTotal,
+    pE = sim$total$deathsE / sim$total$deathsTotal
   )
 
 # The dataset as we would use it in the analysis ------------------
@@ -182,18 +195,27 @@ the_analysis_data$stratum <-
 # Predict expected deaths by cause --------------------------------
 
 expected <- list()
+expected$strata <- unique(the_analysis_data$stratum)
 
-expected$agesex <- XCOD(
-  df = the_analysis_data,
-  cols_prop = c('pA', 'pB', 'pC', 'pD'),
-  col_total = 'deathsTotal',
-  col_stratum = 'stratum',
-  col_origin_time = 't',
-  col_seasonal_time = 'w',
-  col_cvflag = 'cv_flag',
-  nsim = 100,
-  basis = 'ilr'
+# fit separately by stratum
+expected$agesex <- map(
+  expected$strata, ~{
+    stratum_subset <- filter(the_analysis_data, stratum == .x)
+    XCOD(
+      df = stratum_subset,
+      cols_prop = c('pA', 'pB', 'pC', 'pD', 'pE'),
+      col_total = 'deathsTotal',
+      col_origin_time = 't',
+      col_seasonal_time = 'w',
+      col_cvflag = 'cv_flag',
+      nsim = 100,
+      basis = 'ilr'
+    ) %>%
+      mutate(stratum = .x)
+  }
 )
+# merge strata
+expected$agesex <- bind_rows(expected$agesex)
 
 # Aggregate observed and expected over age-sex --------------------
 
@@ -238,7 +260,7 @@ GetExcessByCause(
 # cumulative pscores starting from time 30
 GetExcessByCause(
   xcod_out = expected$agesex,
-  name_parts = c('pA', 'pB', 'pC', 'pD'),
+  name_parts = c('pA', 'pB', 'pC', 'pD', 'pE'),
   measure = 'pscore',
   quantiles = c(0.1, 0.5, 0.9),
   # cumulative measures
@@ -251,7 +273,7 @@ GetExcessByCause(
 # starting from time 25
 GetExcessByCause(
   xcod_out = expected$agesex,
-  name_parts = c('pA', 'pB', 'pC', 'pD'),
+  name_parts = c('pA', 'pB', 'pC', 'pD', 'pE'),
   measure = 'absolute',
   quantiles = c(0.1, 0.5, 0.9),
   # cumulative measures
@@ -268,34 +290,34 @@ GetExcessByCause(
   quantiles = c(0.1, 0.5, 0.9)
 )
 
-# p-scores for causes A & B combined into AB, as well as C & D
+# p-scores for causes A & B combined into AB, as well as C & D & E
 GetExcessByCause(
   xcod_out = expected$agesex,
-  name_parts = list(AB = c('pA', 'pB'), C = 'pC', D = 'pD'),
+  name_parts = list(AB = c('pA', 'pB'), C = 'pC', D = 'pD', E = 'pE'),
   measure = 'absolute',
   quantiles = c(0.1, 0.5, 0.9)
 )
 
-# test if causes ABCD combined give same results as ALLCAUSE
+# test if causes ABCDE combined give same results as ALLCAUSE
 GetExcessByCause(
   xcod_out = expected$agesex,
-  name_parts = list(ABCD = c('pA', 'pB', 'pC', 'pD'), ALLCAUSE = 'ALLCAUSE'),
+  name_parts = list(ABCDE = c('pA', 'pB', 'pC', 'pD', 'pE'), ALLCAUSE = 'ALLCAUSE'),
   measure = 'absolute',
   quantiles = c(0.1, 0.5, 0.9), cumulative = TRUE
 )
 
 # Visualize training and predicted proportions --------------------
 
-observed_vs_expected <- list()
-observed_vs_expected$data <- list()
-observed_vs_expected$data <-
+observed_vs_forecasted <- list()
+observed_vs_forecasted$data <- list()
+observed_vs_forecasted$data <-
   bind_rows(
     expected = GetExcessByCause(
-      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD'),
+      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD', 'pE'),
       measure = 'expected'
     ),
     observed = GetExcessByCause(
-      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD'),
+      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD', 'pE'),
       measure = 'observed'
     ),
     .id = 'measure'
@@ -303,7 +325,7 @@ observed_vs_expected$data <-
   pivot_longer(cols = starts_with('Q')) %>%
   separate(col = name, into = c('quantile', 'part'), sep = '_')
 
-observed_vs_expected$data %>%
+observed_vs_forecasted$data %>%
   ggplot() +
   geom_area(
     aes(x = origin_time, y = value, fill = part),
@@ -329,11 +351,57 @@ observed_vs_expected$data %>%
 ggsave('cover.png', path = './ass/',
        device = ragg::agg_png, width = 170, height = 150, units = 'mm')
 
+# Visualize observed vs. expected ---------------------------------
+
+observed_vs_expected <- list()
+observed_vs_expected$data <- list()
+observed_vs_expected$data <-
+  bind_rows(
+    expected = GetExcessByCause(
+      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD', 'pE'),
+      measure = 'expected'
+    ),
+    observed = GetExcessByCause(
+      expected$total, name_parts = c('pA', 'pB', 'pC', 'pD', 'pE'),
+      measure = 'observed'
+    ),
+    .id = 'measure'
+  ) %>%
+  pivot_longer(cols = starts_with('Q')) %>%
+  separate(col = name, into = c('quantile', 'part'), sep = '_') %>%
+  pivot_wider(names_from = quantile, values_from = value)
+
+observed_vs_expected$data %>%
+  ggplot() +
+  geom_ribbon(
+    aes(x = origin_time, ymin = Q025, ymax = Q975), fill = 'grey90',
+    data = . %>% filter(measure == 'expected')
+  ) +
+  geom_point(
+    aes(x = origin_time, y = Q500), color = 'grey50',
+    # plot observed counts by cause over training period
+    data = . %>% filter(measure == 'observed')
+  ) +
+  geom_line(
+    aes(x = origin_time, y = Q500), color = 'black',
+    # plot average expected counts by cause over test period
+    data = . %>% filter(measure == 'expected')
+  ) +
+  facet_wrap(~part, ncol = 2, scales = 'free_y') +
+  scale_fill_brewer(type = 'div', palette = 9) +
+  theme_minimal() +
+  labs(
+    title = 'Observed and forecasted deaths by cause',
+    fill = 'Cause of death',
+    y = 'Deaths',
+    x = 'Months since 2015'
+  )
+
 # Visualize P-scores ----------------------------------------------
 
 expected$total %>%
   GetExcessByCause(
-    name_parts = c('pA', 'pB', 'pC', 'pD'),
+    name_parts = c('pA', 'pB', 'pC', 'pD', 'pE'),
     measure = 'pscore'
   ) %>%
   pivot_longer(cols = starts_with('Q')) %>%
