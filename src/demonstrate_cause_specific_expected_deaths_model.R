@@ -138,7 +138,7 @@ sim$causeD$pred <- data.frame(
   sim$X_df, lambda = exp(sim$X%*%sim$causeD$para)
 )
 sim$causeD$pred$deaths <-
-  rpois(nrow(sim$X_df), sim$causeD$pred$lambda)
+  rnbinom(nrow(sim$X_df), mu = sim$causeD$pred$lambda, size = 5)
 
 sim$causeE <- list()
 sim$causeE$para <-
@@ -203,6 +203,9 @@ expected$agesex <- map(
     stratum_subset <- filter(the_analysis_data, stratum == .x)
     XCOD(
       df = stratum_subset,
+      formula_total = "origin_time + as.factor(seasonal_time)",
+      formula_prop_dense = "origin_time + as.factor(seasonal_time)",
+      formula_prop_sparse = "1",
       cols_prop = c('pA', 'pB', 'pC', 'pD', '-pE'),
       col_total = 'deathsTotal',
       col_origin_time = 't',
