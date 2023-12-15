@@ -62,13 +62,14 @@ XCOD <- function (
     nsim = 100, basis = 'ilr'
 ) {
   
-  ## preparation
+  ## preparation -------------------------------------------------------
   
   require(mgcv)      # for gam()
   require(coda.base) # for compositional data analysis operations
   
   N = nrow(df)
   
+  # parse part specification
   idx_cols_prop_sparse = grepl('^-', cols_prop)
   cols_prop_sparse = substr(cols_prop[idx_cols_prop_sparse], 2, 1000000L)
   cols_prop_dense = cols_prop[!idx_cols_prop_sparse]
@@ -80,13 +81,14 @@ XCOD <- function (
   # total number of parts
   p = p_sparse + p_dense
   
+  # mark training data
   idx_train <- which(df[,col_cvflag] == 'training')
   N_train <- length(idx_train)
   
   # prepare prediction data
+  # predict over whole data...
   if (is.null(col_stratum)) {
     vec_stratum <- rep('All', N)
-    # predict over whole data...
     df_prediction <- df[,c(
       col_origin_time, col_seasonal_time, col_cvflag,
       col_total, cols_prop_all
@@ -94,20 +96,19 @@ XCOD <- function (
     df_prediction <- cbind(vec_stratum, df_prediction)
   } else {
     vec_stratum <- df[,col_stratum]
-    # predict over whole data...
     df_prediction <- df[,c(
       col_stratum, col_origin_time, col_seasonal_time, col_cvflag,
       col_total, cols_prop_all
     )]
   }
-  
   # standardize names
-  colnames(df_prediction) <- c('stratum', 'origin_time', 'seasonal_time',
-                               'cv_flag', 'OBS_ALLCAUSE', cols_prop_all)
+  colnames(df_prediction) <-
+    c('stratum', 'origin_time', 'seasonal_time',
+      'cv_flag', 'OBS_ALLCAUSE', cols_prop_all)
   # ...but train over this part of input data:
   df_training <- df_prediction[idx_train,]
   
-  ## model expected total deaths over time
+  ## model expected total deaths over time -----------------------------
   
   deathsTotal_form <- as.formula(paste0(
     "OBS_ALLCAUSE~",
@@ -119,18 +120,16 @@ XCOD <- function (
     family = 'poisson'
   )
   
-  ## predict mean expectected total deaths over time
-  
+  # predict mean expectected total deaths over time
   # design matrix
   deathsTotal_Xprd <-
     predict(deathsTotal_fit, newdata = df_prediction, type = 'lpmatrix')
   # coefficients
   deathsTotal_beta <- coef(deathsTotal_fit)
-  
   # mean lambda
   deathsTotal_lambda <- exp(deathsTotal_Xprd%*%deathsTotal_beta)
   
-  ## model expected proportions of deaths by cause over time
+  ## model expected proportions of deaths by cause over time -----------
   
   # predict proportions for sparse parts
   sparse <- list()
@@ -149,9 +148,10 @@ XCOD <- function (
       sparse$prop_gam_fit <-
         gam(sparse$props_form, family = gaussian(link = 'identity'),
             data = sparse$the_data)
-      # simulate predicted proportions from fitted model
+      # predicted proportions from fitted model
       sparse$prop_gam_Xprd <-
-        predict(sparse$prop_gam_fit, newdata = df_prediction, type = 'lpmatrix')
+        predict(sparse$prop_gam_fit, newdata = df_prediction,
+                type = 'lpmatrix')
       sparse$prop_gam_beta <- coef(sparse$prop_gam_fit)
       sparse$P_hat[,k] <- sparse$prop_gam_Xprd%*%sparse$prop_gam_beta
     }
@@ -171,7 +171,8 @@ XCOD <- function (
     # transform proportions to log-ratio analysis space
     dense$Plr <- coordinates(dense$P, basis = basis)
     
-    # matrix holding predicted proportions of dense parts in log-ratio space
+    # matrix holding predicted proportions of dense parts in
+    # log-ratio space
     dense$Plr_hat <- matrix(NA, nrow = N, ncol = p_dense-1)
     
     # model and extrapolate expected proportions in log-ratio space
@@ -185,9 +186,10 @@ XCOD <- function (
       dense$prop_gam_fit <- gam(dense$props_form,
                                 family = gaussian(link = 'identity'),
                                 data = dense$the_data)
-      # simulate predicted proportions from fitted model
+      # predicted proportions from fitted model
       dense$prop_gam_Xprd <-
-        predict(dense$prop_gam_fit, newdata = df_prediction, type = 'lpmatrix')
+        predict(dense$prop_gam_fit, newdata = df_prediction,
+                type = 'lpmatrix')
       dense$prop_gam_beta <- coef(dense$prop_gam_fit)
       dense$prop_gam_Xprd%*%dense$prop_gam_beta
       dense$Plr_hat[,k] <- dense$prop_gam_Xprd%*%dense$prop_gam_beta
@@ -215,11 +217,12 @@ XCOD <- function (
     P_hat[,1:p_dense] <- P_hat[,1:p_dense]*(1-sparse$share_on_all)
   }
   
-  ## simulate expected deaths by cause
+  ## simulate expected deaths by cause ---------------------------------
   
   # observed deaths by cause
-  Dk_obs <- round(df_prediction[,cols_prop_all]*df_prediction[['OBS_ALLCAUSE']],
-                  digits = 0)
+  # rounded to mode of corresponding poisson distribution
+  Dk_obs <-
+    floor(df_prediction[,cols_prop_all]*df_prediction[['OBS_ALLCAUSE']])
   
   # expected deaths by cause (mean + simulations)
   Dk_hat <- array(NA, dim = list(i = N, j = nsim+1, p = p))
@@ -229,6 +232,7 @@ XCOD <- function (
   # the training data across causes of death
   # re-sample residuals from that distribution
   {
+    # calculate log residuals over training data for dense parts
     logerror_obs <- matrix(NA, nrow = N_train, ncol = p_dense)
     for (k in 1:p_dense) {
       Dk_obs_k <- unlist(Dk_obs[,k])
@@ -239,10 +243,12 @@ XCOD <- function (
         Dk_obs_k[idx_train] == 0 | Dk_hat_avg_k[idx_train] == 0,
         0, logerror_obs[,k])
     }
-    
+    # calculate covariance matrix over log-residuals across dense parts
     cov_logerror_obs <- cov(logerror_obs)
     avg_logerror_k <- colMeans(logerror_obs)
     
+    # simulate log residuals based on estimated covariance matrix
+    # and derive simulated deaths
     logerror_sim <- array(NA, dim = c(N, nsim, p_dense))
     for (j in 1:nsim) {
       logerror_sim[,j,] <- MASS::mvrnorm(n = N, mu = avg_logerror_k,
@@ -251,12 +257,18 @@ XCOD <- function (
         Dk_hat[,j+1,k] <- Dk_hat[,1,k]*exp(logerror_sim[,j,k])
       }
     }
+    
     # calibration for sparse parts
-    for (k in 1:p_sparse + p_dense) {
-      Dk_hat[,1,k] <- P_hat[,k]*deathsTotal_lambda
-      Dk_hat[,-1,k] <- rpois(n = N*nsim, lambda = Dk_hat[,1,k])
+    if (p_sparse > 0) {
+      for (k in 1:p_sparse + p_dense) {
+        Dk_hat[,1,k] <- P_hat[,k]*deathsTotal_lambda
+        Dk_hat[,-1,k] <- rpois(n = N*nsim, lambda = Dk_hat[,1,k])
+      }      
     }
+
   }
+  
+  ## Assemble output data ----------------------------------------------
   
   # bind cause-specific predictions and simulations to input data
   for (k in 1:p) {
@@ -288,7 +300,12 @@ XCOD <- function (
   )
   df_prediction <- cbind(df_prediction, X)
   
-  attr(df_prediction, "logerror_cov") <- cov_logerror_obs
+  attr(df_prediction, 'logerror_cov') <- cov_logerror_obs
+  attr(df_prediction, 'p_sparse') <- p_sparse
+  attr(df_prediction, 'p_dense') <- p_dense
+  attr(df_prediction, 'colnames_sparse') <- cols_prop_sparse
+  attr(df_prediction, 'colnames_dense') <- cols_prop_dense
+  attr(df_prediction, 'n_samples') <- nsim
   
   return(df_prediction)
 }

@@ -150,7 +150,6 @@ sim$causeE$pred <- data.frame(
 sim$causeE$pred$deaths <-
   rpois(nrow(sim$X_df), sim$causeE$pred$lambda)
 
-
 # Sum causes to total number of deaths ----------------------------
 
 sim$total <-
