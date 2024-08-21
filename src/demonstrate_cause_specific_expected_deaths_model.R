@@ -419,7 +419,7 @@ expected$total %>%
     aes(y = Q500), color = 'red'
   ) +
   scale_x_continuous(breaks = 0:40) +
-  facet_wrap(~ part) +
+  facet_wrap(~ part, scales = 'free_y') +
   theme_minimal() +
   labs(
     title = 'Percent excess by cause',

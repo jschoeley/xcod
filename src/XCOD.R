@@ -11,6 +11,13 @@ EnsureSortedXCOD <- function (xcod_out) {
 Rowquantiles <- function (X, prob, type = 4, na.rm = TRUE) {
   t(apply(X, 1, quantile, prob = prob, type = type, na.rm = na.rm, names = FALSE))
 }
+# Return data frame of row-wise p-values: P(X_i>=x_i), were X_i are
+# simulations of the test statistic under H0 and x_i is the observed
+# test statistic
+RowPvalue <- function (X, x, na.rm = TRUE) {
+  X_ <- cbind(x, X)
+  apply(X_, 1, function (y) sum(sort(y[-1])>=y[1])/(length(y)-1))
+}
 
 # Expected estimation ---------------------------------------------
 
@@ -397,8 +404,10 @@ GetExcessByCause <- function (
     Y[vec_timeselect,] <- NA
   }
   
+  # calculate excess measures, prediction intervals, and associated P-values
   for (part in amalgamation_names) {
     OBS <- Y[,paste0('OBS_', part)]
+    AVG <- Y[,paste0('XPC_AVG_', part)]
     j <- grepl(paste0('^XPC_SIM[[:digit:]]+_',part,'$'), colnames(Y))
     if (identical(measure, 'observed')) {
       MEASURE <- as.matrix(OBS)
@@ -408,21 +417,42 @@ GetExcessByCause <- function (
     }
     if (identical(measure, 'absolute')) {
       MEASURE <- apply(Y[,j], 2, function (XPC_SIM) {round(OBS-XPC_SIM,0)})
+      # for p-values: distribution of the test statistic under the null
+      # hypothesis of expected distribution of deaths
+      H0DIST <- apply(Y[,j], 2, function (XPC_SIM) {round(XPC_SIM-AVG,0)})
+      # test statistic
+      TESTSTAT <- OBS-AVG
     }
     if (identical(measure, 'pscore')) {
       MEASURE <- apply(Y[,j], 2, function (XPC_SIM) {(OBS-XPC_SIM)/XPC_SIM*100})
+      H0DIST <- apply(Y[,j], 2, function (XPC_SIM) {(XPC_SIM-AVG)/AVG*100})
+      TESTSTAT <- (OBS-AVG)/AVG*100
     }
     if (identical(measure, 'ratio')) {
       MEASURE <- apply(Y[,j], 2, function (XPC_SIM) {OBS/XPC_SIM})
+      H0DIST <- apply(Y[,j], 2, function (XPC_SIM) {XPC_SIM/AVG})
+      TESTSTAT <- OBS/AVG
     }
     # get quantiles
     Q <- Rowquantiles(MEASURE, quantiles, type = 1)
-    colnames(Q) <-
-      paste0('Q', substr(
-        formatC(quantiles, format = 'f', digits = 3),
-        start = 3, stop = 5
-      ), '_', part)
-    X <- cbind(X,Q)
+    # get p-values
+    if (identical(measure, 'observed') | identical(measure, 'expected')) {
+      Pval <- NA
+    } else {
+      Pval <- RowPvalue(H0DIST, TESTSTAT)  
+    }
+    QP <- cbind(Q,Pval)
+    
+    # set names
+    colnames(QP) <-
+      c(
+        paste0('Q', substr(formatC(quantiles, format = 'f', digits = 3),
+                           start = 3, stop = 5), '_', part),
+        paste0('pvalue', '_', part)
+      )
+    
+    # bind results
+    X <- cbind(X,QP)
   }
   return(X)
 }
