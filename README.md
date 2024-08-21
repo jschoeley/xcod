@@ -1,4 +1,6 @@
-# XCOD: Predict Expected Deaths by Cause
+# XCOD: Estimate expected and excess deaths by cause using coherent compositional regression
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13353995.svg)](https://doi.org/10.5281/zenodo.13353995)
 
 [Jonas Schöley](https://orcid.org/0000-0002-3340-8518)
 
@@ -18,10 +20,10 @@ First, the expected total deaths at time t, $\lambda_t$, are predicted via Poiss
 
 $$
 D_t \sim \mathrm{Pois}(\lambda_t) \\
-\lambda_t = \exp \left( \beta_0 + \beta_t t + s(t; \mathbf{\beta}_s) \right),
+\lambda_t = \exp \left( \beta_0 + \beta_t t + s(t; \boldsymbol{\beta}_s) \right),
 $$
 
-where $\beta_t$ is the slope of a log-linear long-term trend and $\boldsymbol{\beta}_s$ is a cyclical function of time $t$ to capture seasonality.
+where $\beta_t$ is the slope of a log-linear long-term trend and $s(t; \boldsymbol{\beta}_s)$ is a cyclical function of time $t$ to capture seasonality.
 
 Second, compositional regressions are fitted to estimate the expected proportion of cause-specific deaths on all deaths. Specifically, the cause-specific proportions, transformed via the centered-log-ratio, are expressed as a linear function of time,
 
@@ -29,7 +31,7 @@ $$
 \mathrm{clr}_j(p^{j}_t) = \gamma_0^j + \gamma_t^j t + s(t; \boldsymbol{\gamma}_s^j),
 $$
 
-with $p^{j}_t$ being the $j^\textrm{th}$ element of $\mathbf{p}_t$ and $\mathrm{clr}_j = \left( \frac {p^j_t} {g(\mathbf{p}_t)} \right)$, where $g(\mathbf{p}_t) = \sqrt[k]{\prod^k p_j}$.
+with $p^{j}_t$ being the $j^\textrm{th}$ element of $\mathbf{p}_t$ and $\mathrm{clr}_j = \left( \frac {p^j_t} {g(\mathbf{p}_t)} \right)$, where $g(\mathbf{p}_t) = \sqrt[k]{\prod^k p^j_t}$ is the geometric mean over the proportions at a given time.
 
 
 ![](./ass/cover.png)
