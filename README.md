@@ -6,6 +6,14 @@
 
 With XCOD you can estimate time series of expected and excess deaths by cause. After fitting XCOD to the data and learning the cause-specific trends and seasonalities as well as residual dependencies across causes you can use XCOD to extrapolate the trends and simulate time series of cause specific expected deaths. Various excess death statistics (P-score, absolute excess deaths, mortality ratio) can be calculated along with associated prediction intervals and p-values.
 
+## Model overview
+
+The central idea is to model total expected deaths and expected death proportions across causes separately and to derive expected deaths by cause by multiplying the predicted proportions with the total. An advantage of the compositional/CoDa (Pawlowsky-Glahn Buccianti, 2011) approach is that sums of cause-specific expected deaths will be coherent with the expected totals and, by choosing an appropriate model for the totals, they too can be made coherent with previously published estimates. Compositional/CoDa techniques for forecasts of death by cause have been pioneered by Oeppen (2008) and Kjaergaard etal. (2019).
+
+After fitting the model to the data and learning the cause-specific trends and seasonalities as well as residual dependencies across causes we extrapolate the trends and simulate time series of cause specific expected deaths which are then used in the calculation of excess death statistics by cause.
+
+The method described below has been implemented in R as the "XCOD" routine (Schöley, 2024).
+
 ## Model specification
 
 A vector of death counts by cause $j = 1, \ldots, k$ at time $t$, $\mathbf{D}^{(j)}_t = (D_t^1, \ldots, D_t^k)$, is modeled as the product of total expected deaths, $\lambda_t$, and a vector of cause-specific expected proportions on all deaths, $\mathbf{p}^{(j)}_t = (p^1_t, \ldots, p^k_t)$,
@@ -26,7 +34,7 @@ $$
 
 where $g(t; \boldsymbol{\beta}_t)$ is a function of time modeling the long term trend, and $s(t; \boldsymbol{\beta}_s)$ is a cyclical function of time $t$ with period $T$ to capture seasonality.
 
-Second, compositional regressions are fitted to estimate the expected proportion of cause-specific deaths on all deaths. Specifically, the cause-specific proportions, transformed via the centered-log-ratio, are expressed as a linear function of time,
+Second, compositional regressions are fitted to estimate the expected proportion of cause-specific deaths on all deaths. Specifically, the cause-specific proportions, transformed via the centered-log-ratio (Pawlowsky-Glahn Buccianti, 2011), are expressed as a linear function of time,
 
 $$
 \mathrm{clr}_j(p^{j}_t) = \gamma_0^j + g(t; \boldsymbol{\gamma}_t) + s(t; T, \boldsymbol{\gamma}_s^j),
@@ -48,7 +56,9 @@ $$
 \mathbf{U}_t^{\mathrm{sim}(j)} \sim \mathcal{N}_k(0, \mathbf{\hat\Sigma}_k).
 $$
 
-These samples of expected deaths are the basis for samples of excess death estimates. We define the P-score for cause $j$ at time $t$ as the percent difference between the observed deaths and the deaths simulated under the expected distribution:
+## Excess death derivation
+
+Samples of expected deaths, $\mathbf{D}^{\mathrm{sim}(j)}_t$, are the basis for samples of excess death estimates. We define the P-score for cause $j$ at time $t$ as the percent difference between the observed deaths and the deaths simulated under the expected distribution:
 
 $$
 \mathrm{Pscore}^{\mathrm{sim},j}_t = \frac {D^{\mathrm{obs},j}_t - D^{\mathrm{sim},j}_t} {D^{\mathrm{sim},j}_t}.
@@ -71,3 +81,13 @@ and
 $$
 \mathrm{Excess}^{\mathrm{sim},j}_{(a,b)} = \sum_{t=a}^b (D^{\mathrm{obs},j}_t - D^{\mathrm{sim},j}_t).
 $$
+
+## References
+
+Pawlowsky-Glahn Buccianti (2011). Compositional Data Analysis: Theory and Applications. John Wiley and Sons, Ltd.
+
+Oeppen (2008). Coherent forecasting of multiple-decrement life tables: a test using Japanese  cause of death data. European Population Conference 2008, European Association for  Population Studies.
+
+Kjaergaard, Ergemen, Kallestrup-Lamb, Oeppen, Lindahl-Jacobsen (2019). Forecasting causes of death by using compositional data analysis: the case of cancer deaths. Journal of the Royal Statistical Society Series C: Applied Statistics. 10.1111/rssc.12357.
+
+Schöley (2024). XCOD: Estimate expected and excess deaths by cause using coherent compositional regression. zenodo.org/doi/10.5281/zenodo.13353995.
