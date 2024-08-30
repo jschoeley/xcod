@@ -14,8 +14,9 @@ Rowquantiles <- function (X, prob, type = 4, na.rm = TRUE) {
 # Return data frame of row-wise p-values: P(X_i>=x_i), were X_i are
 # simulations of the test statistic under H0 and x_i is the observed
 # test statistic
-RowPvalue <- function (X, x, na.rm = TRUE) {
+RowPvalue <- function (X, x, na.rm = TRUE, twotailed = FALSE) {
   X_ <- cbind(x, X)
+  if (isTRUE(twotailed)) X_ <- abs(X_)
   apply(X_, 1, function (y) sum(sort(y[-1])>=y[1])/(length(y)-1))
 }
 
@@ -323,7 +324,8 @@ GetExcessByCause <- function (
     xcod_out, name_parts,
     measure = 'absolute',
     quantiles = c(0.025, 0.1, 0.25, 0.5, 0.75, 0.9, 0.975),
-    cumulative = FALSE, origin_time_start_of_cumulation = 0
+    cumulative = FALSE, origin_time_start_of_cumulation = 0,
+    twotailed = FALSE
 ) {
   
   # forgiveness please, this info should really be explicit in xcod_out
@@ -439,7 +441,7 @@ GetExcessByCause <- function (
     if (identical(measure, 'observed') | identical(measure, 'expected')) {
       Pval <- NA
     } else {
-      Pval <- RowPvalue(H0DIST, TESTSTAT)  
+      Pval <- RowPvalue(H0DIST, TESTSTAT, twotailed = twotailed)
     }
     QP <- cbind(Q,Pval)
     
